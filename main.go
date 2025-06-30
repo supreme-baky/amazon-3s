@@ -4,8 +4,10 @@ import (
 	"encoding/xml"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -14,10 +16,35 @@ import (
 type Bucket struct {
 	Name             string    `xml:"Name"`
 	CreationTime     time.Time `xml:"CreationTime"`
-	LastModifiedTime time.Time `xml:"ModifiedTime"`
+	LastModifiedTime time.Time `xml:"LastModifiedTime"`
 }
 
 var buckets []Bucket
+
+func isValidBucketName(name string) bool {
+	if len(name) < 3 || len(name) > 63 {
+		return false
+	}
+
+	allowedChars := regexp.MustCompile(`^[a-z0-9.-]+$`)
+	if !allowedChars.MatchString(name) {
+		return false
+	}
+
+	if name[0] == '-' || name[len(name)-1] == '-' {
+		return false
+	}
+
+	if regexp.MustCompile(`[.-]{2,}`).MatchString(name) {
+		return false
+	}
+
+	if ip := net.ParseIP(name); ip != nil {
+		return false
+	}
+
+	return true
+}
 
 func CreateBucket(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
@@ -30,7 +57,7 @@ func CreateBucket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	bucketName := path
-	if !isValidBucketName(bucketName) {
+	if isValidBucketName(bucketName) {
 		http.Error(w, "Invalid Bucket name", http.StatusBadRequest)
 		return
 	}
@@ -64,7 +91,7 @@ func CreateBucket(w http.ResponseWriter, r *http.Request) {
 
 	info, _ := file.Stat()
 	if info.Size() == 0 {
-		file.WriteString("Name,CreationTime,ModifiedTime\n")
+		file.WriteString("Name,CreationTime,LastModifiedTime\n")
 	}
 
 	line := fmt.Sprintf("%s,%s,%s\n",
@@ -167,6 +194,13 @@ Options:
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		if strings.Contains(path, "/") {
+			if r.Method == http.MethodPut {
+				UploadObject(w, r)
+				return
+			}
+		}
 		switch r.Method {
 		case http.MethodPut:
 			CreateBucket(w, r)
@@ -183,5 +217,41 @@ Options:
 	fmt.Printf("Server started. Go to %s%s\n", *dir, addr)
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		fmt.Println("Server error:", err)
+	}
+}
+
+func UploadObject(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	path := strings.TrimPrefix(r.URL.Path, "/")
+	paths := strings.SplitN(path, "/", 2)
+
+	if len(paths) != 2 {
+		http.Error(w, "Invalid request. Keep this format /{bucketName}/{ObjectKey}", http.StatusBadRequest)
+		return
+	}
+
+	bucketName := paths[0]
+	objectKey := paths[1]
+
+	bucketPath := fmt.Sprintf("data/%s", bucketName)
+
+	if _, err := os.Stat(bucketPath); os.IsNotExist(err) {
+		http.Error(w, "Bucket does not exist", http.StatusNotFound)
+		return
+	}
+
+	if strings.TrimSpace(objectKey) == "" || strings.Contains(objectKey, "..") {
+		http.Error(w, "Invalid objectKey", http.StatusBadRequest)
+		return
+	}
+
+	objectPath := fmt.Sprintf("%s/%s", bucketPath, objectKey)
+	file, err := os.Create(objectPath)
+	if err != nil {
+		http.Error(w, "Failed to save object"+err.Error(), http.StatusInternalServerError)
+		return
 	}
 }
