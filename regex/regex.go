@@ -3,6 +3,8 @@ package regex
 import (
 	"net"
 	"regexp"
+	"strings"
+	"unicode"
 )
 
 func IsValidBucketName(name string) bool {
@@ -10,21 +12,27 @@ func IsValidBucketName(name string) bool {
 		return false
 	}
 
-	allowedChars := regexp.MustCompile(`^[a-z0-9.-]+$`)
-	if !allowedChars.MatchString(name) {
+	match, _ := regexp.MatchString(`^[a-z0-9.-]+$`, name)
+	if !match {
 		return false
 	}
 
-	if name[0] == '-' || name[len(name)-1] == '-' {
+	if name[0] == '.' || name[0] == '-' || name[len(name)-1] == '.' || name[len(name)-1] == '-' {
 		return false
 	}
 
-	if regexp.MustCompile(`[.-]{2,}`).MatchString(name) {
+	if strings.Contains(name, "..") || strings.Contains(name, "--") ||
+		strings.Contains(name, "-.") || strings.Contains(name, ".-") {
 		return false
 	}
 
 	if ip := net.ParseIP(name); ip != nil {
 		return false
+	}
+	for _, r := range name {
+		if unicode.IsUpper(r) || r > unicode.MaxASCII {
+			return false
+		}
 	}
 
 	return true

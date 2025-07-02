@@ -1,102 +1,74 @@
 package bucket
 
 import (
-	"bufio"
+	"encoding/xml"
 	"fmt"
 	"net/http"
 	"os"
 	"strings"
 )
 
+type ErrorResponse struct {
+	XMLName xml.Name `xml:"Error"`
+	Code    string   `xml:"Code"`
+	Message string   `xml:"Message"`
+}
+
 func DeleteBucket(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
 	path := strings.TrimPrefix(r.URL.Path, "/")
 	if path == "" {
-		http.Error(w, "Bucket Name to delete is not given", http.StatusBadRequest)
+		writeXMLError(w, http.StatusBadRequest, "InvalidBucketName", "Bucket name to delete is not given")
 		return
 	}
 
 	bucketPath := fmt.Sprintf("data/%s", path)
 
 	if _, err := os.Stat(bucketPath); os.IsNotExist(err) {
-		http.Error(w, "Bucket does not exist", http.StatusNotFound)
-		return
-	}
-	files, err := os.ReadDir(bucketPath)
-	if err != nil {
-		http.Error(w, "Failed to read bucket contents", http.StatusInternalServerError)
+		writeXMLError(w, http.StatusNotFound, "NoSuchBucket", "The specified bucket does not exist.")
 		return
 	}
 
-	for _, f := range files {
-		if f.Name() == "object.csv" {
-			http.Error(w, "Bucket must be empty", http.StatusConflict)
+	objectMeta := fmt.Sprintf("%s/objects.csv", bucketPath)
+	if info, err := os.Stat(objectMeta); err == nil && info.Size() > 0 {
+		f, _ := os.Open(objectMeta)
+		defer f.Close()
+		buf := make([]byte, 512)
+		n, _ := f.Read(buf)
+		if n > 0 && strings.Count(string(buf), "\n") > 1 {
+			writeXMLError(w, http.StatusConflict, "BucketNotEmpty", "The bucket you tried to delete is not empty.")
 			return
 		}
 	}
 
 	if err := os.RemoveAll(bucketPath); err != nil {
-		http.Error(w, "Failed to delete files", http.StatusInternalServerError)
+		writeXMLError(w, http.StatusInternalServerError, "InternalError", "Failed to delete the bucket.")
 		return
 	}
 
-	buckets := LoadBuckets(path)
-	for _, b := range buckets {
-		if b.Name == path {
-			err := DeleteBucketMetadata(path)
-			if err != nil {
-				http.Error(w, "Internal Server Error: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-		}
-	}
+	DeleteBucketMetadata(path)
 
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func DeleteBucketMetadata(bucketName string) error {
 	csvPath := fmt.Sprintf("data/%s/buckets.csv", bucketName)
-	file, err := os.Open(csvPath)
-	if err != nil {
-		return err
-	}
-
-	defer file.Close()
-
-	lines := []string{}
-	scanner := bufio.NewScanner(file)
-
-	isFirstLine := true
-	for scanner.Scan() {
-		line := scanner.Text()
-		if isFirstLine {
-			lines = append(lines, line)
-			isFirstLine = false
-			continue
-		}
-		fields := strings.SplitN(line, ",", 2)
-		if fields[0] == bucketName {
-			continue
-		}
-		lines = append(lines, line)
-	}
-	if err := scanner.Err(); err != nil {
-		return err
-	}
-	out, err := os.Create(csvPath)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	for _, line := range lines {
-		_, err := out.WriteString(line + "\n")
-		if err != nil {
-			return err
-		}
+	if _, err := os.Stat(csvPath); err == nil {
+		return os.Remove(csvPath)
 	}
 	return nil
+}
+
+func writeXMLError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(status)
+	errResp := ErrorResponse{
+		Code:    code,
+		Message: message,
+	}
+	xml.NewEncoder(w).Encode(errResp)
 }
