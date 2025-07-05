@@ -5,7 +5,6 @@ import (
 	"encoding/xml"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -23,52 +22,43 @@ type ListAllMyBucketsResult struct {
 
 func GetAllBuckets(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if r.URL.Path != "/" {
-		http.Error(w, "Invalid URL Path", http.StatusBadRequest)
+		writeXMLError(w, http.StatusMethodNotAllowed, "Method Not Allowed", "Invalid Method. Use GET")
 		return
 	}
 
-	dataDir := "data"
-	entries, err := os.ReadDir(dataDir)
-	if err != nil {
-		http.Error(w, "Failed to read data directory", http.StatusInternalServerError)
+	if r.URL.Path != "/" {
+		writeXMLError(w, http.StatusBadRequest, "Invalid URL Path", "Type valid URL")
 		return
 	}
+
+	file, err := os.Open("data/buckets.csv")
+	if err != nil {
+		writeXMLError(w, http.StatusInternalServerError, "Failed to open buckets.csv", "Check bucket.csv inside ./data folder")
+		return
+	}
+	defer file.Close()
 
 	var allBuckets []Bucket
+	scanner := bufio.NewScanner(file)
 
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		bucketName := entry.Name()
-		metaPath := filepath.Join(dataDir, bucketName, "buckets.csv")
-
-		file, err := os.Open(metaPath)
-		if err != nil {
-			continue
-		}
-		scanner := bufio.NewScanner(file)
-		scanner.Scan()
-
-		if scanner.Scan() {
-			parts := strings.Split(scanner.Text(), ",")
+	if scanner.Scan() {
+		for scanner.Scan() {
+			line := scanner.Text()
+			parts := strings.Split(line, ",")
 			if len(parts) != 3 {
-				file.Close()
 				continue
 			}
-			created, _ := time.Parse(time.RFC3339, parts[1])
-			modified, _ := time.Parse(time.RFC3339, parts[2])
+			created, err1 := time.Parse(time.RFC3339, parts[1])
+			modified, err2 := time.Parse(time.RFC3339, parts[2])
+			if err1 != nil || err2 != nil {
+				continue
+			}
 			allBuckets = append(allBuckets, Bucket{
 				Name:             parts[0],
 				CreationTime:     created,
 				LastModifiedTime: modified,
 			})
 		}
-		file.Close()
 	}
 
 	w.Header().Set("Content-Type", "application/xml")

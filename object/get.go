@@ -2,37 +2,39 @@ package object
 
 import (
 	"bufio"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
 func GetObject(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		writeXMLError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "Only GET method is allowed", r.URL.Path)
 		return
 	}
 
 	path := strings.TrimPrefix(r.URL.Path, "/")
 	parts := strings.SplitN(path, "/", 2)
 	if len(parts) != 2 {
-		http.Error(w, "Invalid format. Use /{bucketName}/{objectKey}", http.StatusBadRequest)
+		writeXMLError(w, http.StatusBadRequest, "InvalidURI", "Expected format: /{bucketName}/{objectKey}", r.URL.Path)
 		return
 	}
 
 	bucketName := parts[0]
 	objectKey := parts[1]
-	bucketPath := fmt.Sprintf("data/%s", bucketName)
-	objectPath := fmt.Sprintf("%s/%s", bucketPath, objectKey)
+	baseDir := "data"
+
+	bucketPath := filepath.Join(baseDir, bucketName)
+	objectPath := filepath.Join(bucketPath, objectKey)
 
 	if _, err := os.Stat(objectPath); os.IsNotExist(err) {
-		http.Error(w, "Object not found", http.StatusNotFound)
+		writeXMLError(w, http.StatusNotFound, "NoSuchKey", "The specified object does not exist", r.URL.Path)
 		return
 	}
 
-	metaPath := fmt.Sprintf("%s/objects.csv", bucketPath)
+	metaPath := filepath.Join(bucketPath, "objects.csv")
 	contentType := "application/octet-stream"
 
 	if f, err := os.Open(metaPath); err == nil {
@@ -50,7 +52,7 @@ func GetObject(w http.ResponseWriter, r *http.Request) {
 
 	file, err := os.Open(objectPath)
 	if err != nil {
-		http.Error(w, "Error opening object file", http.StatusInternalServerError)
+		writeXMLError(w, http.StatusInternalServerError, "InternalError", "Failed to open object file", r.URL.Path)
 		return
 	}
 	defer file.Close()

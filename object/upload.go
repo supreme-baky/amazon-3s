@@ -2,66 +2,91 @@ package object
 
 import (
 	"bufio"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
-	"triple-s/regex"
+	"triple-s/bucket"
+	"triple-s/help/regex"
 )
 
 type Object struct {
 	ObjectKey    string
 	Size         int64
 	ContentType  string
-	LastModified time.Time
+	LastModified string
 }
 
 var objects []Object
 
+type XMLError struct {
+	XMLName   string `xml:"Error"`
+	Code      string `xml:"Code"`
+	Message   string `xml:"Message"`
+	Resource  string `xml:"Resource"`
+	RequestID string `xml:"RequestId"`
+}
+
+func writeXMLError(w http.ResponseWriter, statusCode int, code, message, resource string) {
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(statusCode)
+
+	errResp := XMLError{
+		Code:      code,
+		Message:   message,
+		Resource:  resource,
+		RequestID: "1234567890",
+	}
+	xml.NewEncoder(w).Encode(errResp)
+}
+
 func UploadObject(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
-		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		writeXMLError(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "Only PUT is allowed", r.URL.Path)
 		return
 	}
 
 	path := strings.TrimPrefix(r.URL.Path, "/")
 	parts := strings.SplitN(path, "/", 2)
 	if len(parts) != 2 {
-		http.Error(w, "Invalid format. Use /{bucketName}/{objectKey}", http.StatusBadRequest)
+		writeXMLError(w, http.StatusBadRequest, "InvalidURI", "Expected format: /{bucketName}/{objectKey}", r.URL.Path)
 		return
 	}
 
 	bucketName := parts[0]
 	objectKey := parts[1]
-	bucketPath := fmt.Sprintf("data/%s", bucketName)
-	objectPath := fmt.Sprintf("%s/%s", bucketPath, objectKey)
+	baseDir := "data"
+	bucketPath := filepath.Join(baseDir, bucketName)
+	objectPath := filepath.Join(bucketPath, objectKey)
 
 	if _, err := os.Stat(bucketPath); os.IsNotExist(err) {
-		http.Error(w, "Bucket does not exist", http.StatusNotFound)
+		writeXMLError(w, http.StatusNotFound, "NoSuchBucket", "Bucket does not exist", r.URL.Path)
 		return
 	}
 
 	if !regex.IsValidBucketName(objectKey) {
-		http.Error(w, "Invalid Object name", http.StatusBadRequest)
+		writeXMLError(w, http.StatusBadRequest, "InvalidObjectName", "Invalid object name", r.URL.Path)
 		return
 	}
 
 	file, err := os.Create(objectPath)
 	if err != nil {
-		http.Error(w, "Failed to save object: "+err.Error(), http.StatusInternalServerError)
+		writeXMLError(w, http.StatusInternalServerError, "InternalError", "Failed to save object", r.URL.Path)
 		return
 	}
 	defer file.Close()
 
 	size, err := io.Copy(file, r.Body)
 	if err != nil {
-		http.Error(w, "Failed to write object data", http.StatusInternalServerError)
+		writeXMLError(w, http.StatusInternalServerError, "InternalError", "Failed to write object data", r.URL.Path)
 		return
 	}
 
-	metaPath := fmt.Sprintf("%s/objects.csv", bucketPath)
+	metaPath := filepath.Join(bucketPath, "objects.csv")
 	existingLines := []string{"ObjectKey,Size,ContentType,LastModified"}
 
 	if f, err := os.Open(metaPath); err == nil {
@@ -87,13 +112,28 @@ func UploadObject(w http.ResponseWriter, r *http.Request) {
 
 	metaFile, err := os.Create(metaPath)
 	if err != nil {
-		http.Error(w, "Failed to write metadata", http.StatusInternalServerError)
+		writeXMLError(w, http.StatusInternalServerError, "InternalError", "Failed to write metadata", r.URL.Path)
 		return
 	}
 	defer metaFile.Close()
+
 	for _, line := range existingLines {
 		fmt.Fprintln(metaFile, line)
 	}
 
+	if err := bucket.UpdateBucketLastModified(bucketName); err != nil {
+		writeXMLError(w, http.StatusInternalServerError, "InternalError", "Failed to update bucket metadata", r.URL.Path)
+		return
+	}
+
+	response := Object{
+		ObjectKey:    objectKey,
+		Size:         size,
+		ContentType:  contentType,
+		LastModified: lastModified,
+	}
+
+	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusOK)
+	xml.NewEncoder(w).Encode(response)
 }

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"triple-s/bucket"
-	"triple-s/info"
+	"triple-s/help/info"
 	"triple-s/object"
 )
 
